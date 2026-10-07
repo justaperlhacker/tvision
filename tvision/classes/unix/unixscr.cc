@@ -53,6 +53,10 @@ Mouse reporting not disabled at exit!!!
  #endif
  #define NCURSES_OPAQUE 0
 #endif
+// Modern ncurses keeps WINDOW opaque even with NCURSES_OPAQUE 0, expose the
+// internals (documented ncurses mechanism) so the stdscr _ISPAD trick used
+// below keeps working.
+#define NCURSES_INTERNALS 1
 
 #ifdef TVOSf_FreeBSD
  #include <ncurses.h>

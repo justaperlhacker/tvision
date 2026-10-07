@@ -39,6 +39,10 @@ key, Shift+(Inset,End,Home,PgUp,PgDn,Delete,Arrows,etc.) and more.
 
 #include <tv/unix/key.h>
 
+// termios functions (tcgetattr/tcsetattr/tcflush) are no longer pulled in
+// transitively by modern C library headers, include it explicitly.
+#include <termios.h>
+
 // New curses (ncurses) headers
 #ifdef TVOSf_FreeBSD
  #include <ncurses.h>
