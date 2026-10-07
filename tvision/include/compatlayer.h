@@ -358,7 +358,14 @@ typedef unsigned long  ulong;
    // Is that CLang? Clang/libc++ defines __GNUC__=4 ...
    // and C++ standard says inclusion of this file has no effect, to detect libc++
    #if defined(__cplusplus)
-    #include <ciso646>
+    // <ciso646> is deprecated since C++20 (libstdc++ #warns about it, which
+    // is fatal for -Werror builds). <version> is its successor and still
+    // defines _LIBCPP_VERSION when using libc++, which is all we need it for.
+    #if __cplusplus >= 202002L
+     #include <version>
+    #else
+     #include <ciso646>
+    #endif
    #endif
    #ifdef _LIBCPP_VERSION
     // This is not defined by g++. We assume this is CLang
