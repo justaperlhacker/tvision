@@ -122,6 +122,8 @@ static TScreenFont256 *CreateFreeTypeFont(const char *file, int pixelH,
  FT_Face face;
  TScreenFont256 *font;
  int asc, desc, h, w, wb, i;
+ uint16 uniForByte[256];
+ ushort *scrTrans;
  uchar *data;
 
  if (FT_Init_FreeType(&lib))
@@ -141,11 +143,16 @@ static TScreenFont256 *CreateFreeTypeFont(const char *file, int pixelH,
  desc=(int)(-(face->size->metrics.descender>>6));
  h=asc+desc;
  if (h<1) h=pixelH;
+ /* The driver draws screen-code-page bytes; get their Unicode so
+    box-drawing/frame chars map to real outline glyphs. */
+ scrTrans=TVCodePage::GetTranslate(TVCodePage::GetScrCodePage());
+ for (i=0;i<256;i++)
+     uniForByte[i]=TVCodePage::UnicodeForInternalCode(scrTrans[i]);
  /* Cell width: the widest advance in the printable ASCII range. */
  w=0;
  for (i=32;i<127;i++)
    {
-    int gi=FT_Get_Char_Index(face,i);
+    int gi=FT_Get_Char_Index(face,uniForByte[i]);
     if (!gi || FT_Load_Glyph(face,gi,FT_LOAD_DEFAULT))
        continue;
     if ((int)(face->glyph->advance.x>>6)>w)
@@ -162,7 +169,7 @@ static TScreenFont256 *CreateFreeTypeFont(const char *file, int pixelH,
    {
     uchar *shape=data+(size_t)i*wb*h;
     FT_Bitmap *bm;
-    int gi=FT_Get_Char_Index(face,i);
+    int gi=FT_Get_Char_Index(face,uniForByte[i]);
     int bx, by, x, y;
 
     if (!gi || FT_Load_Glyph(face,gi,FT_LOAD_DEFAULT))
