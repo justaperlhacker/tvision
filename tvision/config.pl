@@ -86,6 +86,7 @@ if ($OS eq 'UNIX')
    LookForNCurses($NCursesVersionNeeded);
    LookForKeysyms();
    LookForXlib();
+   LookForFreeType();
    # Used for X11 driver. Linux implementation of POSIX threads is very bad
    # and needs a lot of workarounds. Some of them could be just bugs in the
    # glibc I use but the fact is that the needed tricks make it very Linux
@@ -101,6 +102,12 @@ LookForIntlSupport();
 LookForAllegro($AllegroVersionNeeded);
 LookForEndianess();
 LookForMaintainerTools() if $conf{'MAINTAINER_MODE'} eq 'yes';
+# FreeType headers are needed to compile the X11 driver's TTF/OTF support
+if ((@conf{'HAVE_FREETYPE'} eq 'yes') && length($conf{'FreeTypeCFlags'}))
+  {
+   $CFLAGS.=' '.$conf{'FreeTypeCFlags'};
+   $CXXFLAGS.=' '.$conf{'FreeTypeCFlags'};
+  }
 
 print "\n";
 GenerateMakefile();
@@ -159,7 +166,8 @@ $MakeDefsRHIDE[2].=' iconv' if (@conf{'iconv'} eq 'yes') && !$UseDummyIntl;
 $MakeDefsRHIDE[2].=' '.$conf{'NameCurses'} if ($conf{'ncurses'} ne 'no') && ($OS eq 'UNIX');
 $MakeDefsRHIDE[2].=' m' if ($OS eq 'UNIX');
 $MakeDefsRHIDE[2].=' gpm' if @conf{'HAVE_GPM'} eq 'yes';
-$MakeDefsRHIDE[2].=' '.$conf{'X11Lib'} if ($conf{'HAVE_X11'} eq 'yes');
+ $MakeDefsRHIDE[2].=' '.$conf{'X11Lib'} if ($conf{'HAVE_X11'} eq 'yes');
+ $MakeDefsRHIDE[2].=' freetype' if @conf{'HAVE_FREETYPE'} eq 'yes';
 $MakeDefsRHIDE[2].=' mss' if @conf{'mss'} eq 'yes';
 $MakeDefsRHIDE[2].=' intl' if ((($OSf eq 'FreeBSD') || ($OSf eq 'QNXRtP')) && ($conf{'intl'} eq 'yes'));
 $MakeDefsRHIDE[2].=' pthread' if $conf{'HAVE_LINUX_PTHREAD'} eq 'yes';
@@ -186,9 +194,10 @@ if ($OS eq 'UNIX')
    if (@conf{'HAVE_X11'} eq 'yes')
      {
       $aux=$conf{'X11IncludePath'} ? ' '.$conf{'X11IncludePath'} : ' /usr/X11R6/include';
-      $MakeDefsRHIDE[0].=$aux;
-      $MakeDefsRHIDE[9].=$aux;
-     }
+       $MakeDefsRHIDE[0].=$aux;
+       $MakeDefsRHIDE[9].=$aux;
+      }
+   $MakeDefsRHIDE[0].=' '.$conf{'FreeTypeCFlags'} if @conf{'HAVE_FREETYPE'} eq 'yes';
    $MakeDefsRHIDE[3].=$LDExtraDirs.' ';
    # QNX 6.2 beta 3 workaround
    $MakeDefsRHIDE[3].='/lib ' if ($OSf eq 'QNXRtP');
@@ -789,6 +798,53 @@ int main(void)
 }
 
 #
+# FreeType is optional and only used by the X11 driver to rasterize
+# TrueType/OpenType fonts (FontFile= / FontSize= options).
+#
+sub LookForFreeType
+{
+ my ($test,$cflags,$libs);
+
+ print 'Looking for FreeType: ';
+ if (@conf{'HAVE_FREETYPE'})
+   {
+    print "@conf{'HAVE_FREETYPE'} (cached)\n";
+    return;
+   }
+ $cflags=`pkg-config --cflags freetype2 2>/dev/null`;
+ $libs=`pkg-config --libs freetype2 2>/dev/null`;
+ $cflags=~s/[\r\n]//g;
+ $libs=~s/[\r\n]//g;
+ $libs='-lfreetype' unless length($libs);
+ $test='
+#include <stdio.h>
+#include <ft2build.h>
+#include FT_FREETYPE_H
+int main(void)
+{
+ FT_Library lib;
+ if (FT_Init_FreeType(&lib)) return 1;
+ FT_Done_FreeType(lib);
+ printf("OK\n");
+ return 0;
+}
+';
+ $test=RunGCCTest($GCC,'c',$test,"$cflags $libs");
+ if ($test=~/OK/)
+   {
+    $conf{'HAVE_FREETYPE'}='yes';
+    $conf{'FreeTypeCFlags'}=$cflags;
+    $conf{'FreeTypeLibs'}=$libs;
+    print "yes OK\n";
+   }
+ else
+   {
+    $conf{'HAVE_FREETYPE'}='no';
+    print "no, TTF/OTF fonts disabled\n";
+   }
+}
+
+#
 # GlibC 2.1.3 defines it by itself, lamentably doesn't have any protection
 # mechanism to avoid collisions with the kernel headers, too bad.
 #
@@ -1344,6 +1400,7 @@ sub CreateConfigH
  $text.=ConfigIncDef('HAVE_DEFINE_KEY','ncurses 4.2 or better have define_key (In Linux)');
  $text.=ConfigIncDefYes('HAVE_KEYSYMS','The X11 keysyms are there');
  $text.=ConfigIncDefYes('HAVE_X11','X11 library and headers');
+ $text.=ConfigIncDefYes('HAVE_FREETYPE','FreeType for TTF/OTF fonts');
  $text.=ConfigIncDefYes('HAVE_ALLEGRO','Allegro library');
  # Disable i8n only if the user requested, otherwise use gettext or the dummy
  $conf{'HAVE_INTL_SUPPORT'}=@conf{'no-intl'} eq 'yes' ? 'no' : 'yes';
