@@ -110,13 +110,28 @@ const unsigned foWmin=5, foHmin=7, foWmax=20, foHmax=32;
 const int cursorDelay=300000;
 
 #ifdef HAVE_FREETYPE
-/* Build a 256-glyph, 1-bit font from a TrueType/OpenType file using FreeType.
-   Codes 0..255 are mapped to Unicode directly (ISO-8859-1), matching the
-   driver's default code page. The result has the same layout as the built-in
-   TScreenFont256 fonts, so the existing CreateXImageFont/XPutImage path is
-   reused unchanged. Returns NULL on failure. */
+/* Antialiased glyphs (one byte of coverage per pixel), indexed by character.
+   Only used when FontAA is enabled and the display is true color. */
+static uchar *aaGlyphs[256]={0};
+static int useAAFont=0;
+
+/* Linear blend of two 24-bit RGB pixels by coverage a (0..255). */
+static inline uint32 blend32(uint32 bg, uint32 fg, unsigned a)
+{
+ unsigned ia=255-a;
+ uint32 r=(((fg>>16)&0xFF)*a+((bg>>16)&0xFF)*ia)/255;
+ uint32 g=(((fg>>8)&0xFF)*a+((bg>>8)&0xFF)*ia)/255;
+ uint32 b=((fg&0xFF)*a+(bg&0xFF)*ia)/255;
+ return (r<<16)|(g<<8)|b;
+}
+
+/* Build a 256-glyph font from a TrueType/OpenType file using FreeType.
+   Codes 0..255 are mapped through the screen code page to Unicode. With
+   antialias we also render 8-bit coverage (FT_RENDER_MODE_NORMAL) into
+   aaGlyphs[]; the 1-bit data is still produced (thresholded) as a fallback
+   for non-true-color visuals. Returns NULL on failure. */
 static TScreenFont256 *CreateFreeTypeFont(const char *file, int pixelH,
-                                          int *outW, int *outH)
+                                          int antialias, int *outW, int *outH)
 {
  FT_Library lib;
  FT_Face face;
@@ -165,16 +180,25 @@ static TScreenFont256 *CreateFreeTypeFont(const char *file, int pixelH,
  data=new uchar[(size_t)wb*h*256];
  memset(data,0,(size_t)wb*h*256);
 
+ if (antialias)
+   {
+    useAAFont=1;
+    for (i=0;i<256;i++)
+        aaGlyphs[i]=new uchar[(size_t)w*h];
+   }
  for (i=0;i<256;i++)
    {
     uchar *shape=data+(size_t)i*wb*h;
+    uchar *aa=antialias ? aaGlyphs[i] : NULL;
     FT_Bitmap *bm;
     int gi=FT_Get_Char_Index(face,uniForByte[i]);
     int bx, by, x, y;
 
+    if (antialias)
+       memset(aa,0,(size_t)w*h);
     if (!gi || FT_Load_Glyph(face,gi,FT_LOAD_DEFAULT))
        continue;
-    if (FT_Render_Glyph(face->glyph,FT_RENDER_MODE_MONO))
+    if (FT_Render_Glyph(face->glyph,antialias ? FT_RENDER_MODE_NORMAL : FT_RENDER_MODE_MONO))
        continue;
     bm=&face->glyph->bitmap;
     bx=face->glyph->bitmap_left;
@@ -189,8 +213,18 @@ static TScreenFont256 *CreateFreeTypeFont(const char *file, int pixelH,
           int tx=bx+x;
           if (tx<0 || tx>=w)
              continue;
-          if ((bm->buffer[y*bm->pitch+(x>>3)]>>(7-(x&7)))&1)
-             shape[ty*wb+(tx>>3)]|=(0x80>>(tx&7));
+          if (antialias)
+            {
+             unsigned cov=bm->buffer[y*bm->pitch+x];
+             aa[ty*w+tx]=(uchar)cov;
+             if (cov>=128)
+                shape[ty*wb+(tx>>3)]|=(0x80>>(tx&7));
+            }
+          else
+            {
+             if ((bm->buffer[y*bm->pitch+(x>>3)]>>(7-(x&7)))&1)
+                shape[ty*wb+(tx>>3)]|=(0x80>>(tx&7));
+            }
          }
       }
    }
@@ -283,6 +317,9 @@ TScreenX11::~TScreenX11()
 
  DestroyXImageFont(0);
  DestroyXImageFont(1);
+#ifdef HAVE_FREETYPE
+ { int k; for (k=0;k<256;k++) { delete[] aaGlyphs[k]; aaGlyphs[k]=NULL; } useAAFont=0; }
+#endif
  if (cursorImage)
     XDestroyImage(cursorImage);
  if (ximgAux32)
@@ -351,6 +388,25 @@ void TScreenX11::putChar(XImage *img, unsigned x, unsigned y)
 inline
 void TScreenX11::drawChar(GC gc, unsigned x, unsigned y, uchar aChar, uchar aAttr)
 {
+#ifdef HAVE_FREETYPE
+ if (useAAFont && isTrueColor && aaGlyphs[aChar] &&
+     !(useSecondaryFont && (aAttr & 0x8)))
+   {
+    uchar *glyph=aaGlyphs[aChar];
+    uint32 *p=aux32data;
+    unsigned line, col;
+    for (line=0; line<fontH; line++)
+       for (col=0; col<fontW; col++, p++)
+         {
+          unsigned a=glyph[line*fontW+col];
+          if (a>=255)    *p=gcForeground;
+          else if (a==0) *p=gcBackground;
+          else           *p=blend32(gcBackground,gcForeground,a);
+         }
+    XPutImage(disp,mainWin,gc,ximgAux32,0,0,x,y,fontW,fontH);
+    return;
+   }
+#endif
  XImage *c;
  if (useSecondaryFont && (aAttr & 0x8))
     c=ximgSecFont[aChar];
@@ -1600,11 +1656,12 @@ TScreenX11::TScreenX11()
 #ifdef HAVE_FREETYPE
     // Optional TrueType/OpenType font (FontFile= and FontSize= options)
     const char *ttfFile=optSearch("FontFile");
-    long ttfSize=0;
+    long ttfSize=0, aa=1;
+    optSearch("FontAA",aa);
     if (ttfFile && optSearch("FontSize",ttfSize) && ttfSize>0)
       {
        int tw=fontW, th=fontH;
-       TScreenFont256 *ftf=CreateFreeTypeFont(ttfFile,(int)ttfSize,&tw,&th);
+       TScreenFont256 *ftf=CreateFreeTypeFont(ttfFile,(int)ttfSize,(int)aa,&tw,&th);
        if (ftf)
          {
           useFont=ftf;
